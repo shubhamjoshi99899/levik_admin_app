@@ -1,7 +1,8 @@
 "use client";
 
-import { ArrowLeft, Pencil, Power, PowerOff } from "lucide-react";
+import { ArrowLeft, Pencil, Power, PowerOff, Trash2 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { RelatedScans } from "@/components/scans/scans-table";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
@@ -11,7 +12,9 @@ import { QueryBoundary } from "@/components/shared/query-states";
 import { DetailGrid, SectionCard } from "@/components/shared/section-card";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
-import { $api, api, call } from "@/lib/api/client";
+import { $api, api, call, refreshAfterMutation } from "@/lib/api/client";
+import { API_URL, getAccessToken, refreshAccessToken } from "@/lib/api/auth";
+import { ApiError } from "@/lib/api/errors";
 import type { ProductDto } from "@/lib/api/types";
 import { formatDateTime, formatINR, formatNumber } from "@/lib/utils/format";
 import { runAction } from "@/lib/utils/run-action";
@@ -27,9 +30,26 @@ export function ProductDetail({ id }: { id: string }) {
   );
 }
 
+async function deleteProduct(id: string): Promise<void> {
+  let token = getAccessToken() ?? (await refreshAccessToken());
+  const send = (t: string | null) =>
+    fetch(`${API_URL}/api/v1/admin/products/${id}`, {
+      method: "DELETE",
+      headers: t ? { authorization: `Bearer ${t}` } : {},
+    });
+  let res = await send(token);
+  if (res.status === 401) {
+    token = await refreshAccessToken();
+    res = await send(token);
+  }
+  if (!res.ok) throw await ApiError.fromResponse(res);
+}
+
 function ProductPage({ product }: { product: ProductDto }) {
+  const router = useRouter();
   const [editOpen, setEditOpen] = useState(false);
   const [toggleOpen, setToggleOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const { data: stockPage } = $api.useQuery("get", "/api/v1/admin/inventory", { params: { query: { productId: product.id, pageSize: 100 } } });
   const stock = stockPage?.items ?? [];
 
@@ -49,6 +69,9 @@ function ProductPage({ product }: { product: ProductDto }) {
             </Button>
             <Button variant={product.isActive ? "destructive" : "default"} onClick={() => setToggleOpen(true)}>
               {product.isActive ? <PowerOff /> : <Power />} {product.isActive ? "Deactivate" : "Activate"}
+            </Button>
+            <Button variant="destructive" onClick={() => setDeleteOpen(true)}>
+              <Trash2 /> Delete
             </Button>
           </>
         }
@@ -100,6 +123,25 @@ function ProductPage({ product }: { product: ProductDto }) {
         <RelatedScans filter={{ productId: product.id }} />
       </SectionCard>
       <ProductFormDialog product={product} open={editOpen} onOpenChange={setEditOpen} />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title="Delete product?"
+        description="This permanently removes the product from the catalogue. Existing scan and invoice records are unaffected, but the product will no longer appear anywhere in the portal."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={async () => {
+          const result = await runAction(
+            () => deleteProduct(product.id),
+            "Product deleted",
+          );
+          if (result.ok) {
+            void refreshAfterMutation();
+            router.push("/products");
+          }
+          return result.ok ? undefined : false;
+        }}
+      />
       <ConfirmDialog
         open={toggleOpen}
         onOpenChange={setToggleOpen}
